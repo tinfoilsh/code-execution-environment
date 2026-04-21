@@ -13,4 +13,6 @@ shim:
   upstream-port: 8000
   paths:
     - /exec
+    - /read
+    - /write
     - /health
