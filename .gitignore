@@ -24,5 +24,9 @@ Thumbs.db
 __pycache__/
 *.pyc
 
+# Go binaries
+api-server/api-server
+executor/executor
+
 # Logs
 *.log

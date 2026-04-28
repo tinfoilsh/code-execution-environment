@@ -2,8 +2,10 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -78,23 +80,19 @@ func handleExec(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	cmd := exec.Command("bash", "-c", req.Command)
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "bash", "-c", req.Command)
 	cmd.Dir = workspace
 
 	var stdoutBuf, stderrBuf bytes.Buffer
 	cmd.Stdout = &stdoutBuf
 	cmd.Stderr = &stderrBuf
 
-	timer := time.AfterFunc(30*time.Second, func() {
-		if cmd.Process != nil {
-			cmd.Process.Kill()
-		}
-	})
-
 	err := cmd.Run()
-	timedOut := !timer.Stop()
 
-	if timedOut {
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		respondJSON(w, http.StatusOK, execResponse{
 			Stderr:   "command timed out (30s)",
 			ExitCode: -1,
@@ -104,7 +102,8 @@ func handleExec(w http.ResponseWriter, r *http.Request) {
 
 	exitCode := 0
 	if err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
 			exitCode = exitErr.ExitCode()
 		}
 	}
@@ -130,8 +129,12 @@ func handleRead(w http.ResponseWriter, r *http.Request) {
 	resolved := resolveP(req.Path)
 
 	info, err := os.Stat(resolved)
-	if os.IsNotExist(err) {
-		respondError(w, http.StatusNotFound, fmt.Sprintf("file not found: %s", req.Path))
+	if err != nil {
+		if os.IsNotExist(err) {
+			respondError(w, http.StatusNotFound, fmt.Sprintf("file not found: %s", req.Path))
+			return
+		}
+		respondError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	if info.IsDir() {
