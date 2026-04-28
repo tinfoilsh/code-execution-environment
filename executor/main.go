@@ -10,8 +10,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sync"
 	"time"
 )
+
+var execMu sync.Mutex
 
 const workspace = "/workspace"
 
@@ -62,6 +65,9 @@ func respondError(w http.ResponseWriter, status int, msg string) {
 }
 
 func handleExec(w http.ResponseWriter, r *http.Request) {
+	execMu.Lock()
+	defer execMu.Unlock()
+
 	var req execRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		respondError(w, http.StatusBadRequest, "invalid json")
