@@ -1,13 +1,14 @@
-cvm-version: 0.7.1
+shim-version: v0.3.18@sha256:7d9f98be78c91ede89f43c948a12d084fae34312effe9395ca7ed572991cb561
+cvm-version: 0.7.5
 cpus: 2
 memory: 8192
 
 containers:
   - name: "api-server"
-    image: "ghcr.io/tinfoilsh/code-exec-api-server:latest@sha256:0312d1d0a4cf0205bd2385af1eac2b126d46cc0476be4a7f9441ca31b5f016d7"
+    image: "ghcr.io/tinfoilsh/code-execution-environment/api-server@sha256:0000000000000000000000000000000000000000000000000000000000000000"
 
   - name: "executor"
-    image: "ghcr.io/tinfoilsh/code-exec-environment:latest@sha256:cffca3d5c99a832eb2fcc1d628aa2bcf2592ee600edbf79b597276717c549b77"
+    image: "ghcr.io/tinfoilsh/code-execution-environment/executor@sha256:0000000000000000000000000000000000000000000000000000000000000000"
 
 shim:
   upstream-port: 8000
