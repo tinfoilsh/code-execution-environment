@@ -5,10 +5,10 @@ memory: 8192
 
 containers:
   - name: "api-server"
-    image: "ghcr.io/tinfoilsh/code-execution-environment/api-server@sha256:0000000000000000000000000000000000000000000000000000000000000000"
+    image: "ghcr.io/tinfoilsh/code-execution-environment/api-server@sha256:a557d40032feec69325df735699b12e557cceb18d9e449dfe84d9209beab3a3c" # v0.0.6
 
   - name: "executor"
-    image: "ghcr.io/tinfoilsh/code-execution-environment/executor@sha256:0000000000000000000000000000000000000000000000000000000000000000"
+    image: "ghcr.io/tinfoilsh/code-execution-environment/executor@sha256:23c26d1fc9ae42d25c02941a8de40891d4030487347b7ec70cae2a470bde1bba" # v0.0.6
 
 shim:
   upstream-port: 8000
