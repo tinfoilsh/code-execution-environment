@@ -1,8 +1,12 @@
-FROM python:3.12-slim
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    bash coreutils curl jq \
-    && rm -rf /var/lib/apt/lists/*
-COPY main.py /opt/executor/main.py
+FROM golang:1.23-alpine AS build
+WORKDIR /src
+COPY go.mod .
+COPY main.go .
+RUN CGO_ENABLED=0 go build -o /executor .
+
+FROM alpine:3.20
+RUN apk add --no-cache bash coreutils curl jq
+COPY --from=build /executor /executor
 RUN mkdir -p /workspace
 WORKDIR /workspace
-CMD ["python", "/opt/executor/main.py"]
+CMD ["/executor"]
