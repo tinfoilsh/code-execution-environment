@@ -16,4 +16,6 @@ shim:
     - /exec
     - /read
     - /write
+    - /snapshot
+    - /restore
     - /health

@@ -199,6 +199,10 @@ func main() {
 	mux.HandleFunc("/exec", handleExec)
 	mux.HandleFunc("/read", handleRead)
 	mux.HandleFunc("/write", handleWrite)
+	mux.HandleFunc("/snapshot", handleSnapshot)
+	// /restore is reachable on this internal port. The api-server proxy
+	// gates it behind a startup-only flag
+	mux.HandleFunc("/restore", handleRestore)
 	mux.HandleFunc("/health", healthHandler)
 
 	log.Println("executor listening on :9000")
