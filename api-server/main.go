@@ -1,15 +1,31 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"sync/atomic"
 	"time"
 )
 
-const executorURL = "http://localhost:9000"
+const (
+	executorSocket = "/run/execsock/exec.sock"
+	// Host portion of the URL is ignored by the unix-socket dialer, but
+	// http.NewRequest still needs a syntactically-valid URL.
+	executorURL = "http://executor"
+)
+
+var executorClient = &http.Client{
+	Timeout: 35 * time.Second,
+	Transport: &http.Transport{
+		DialContext: func(_ context.Context, _, _ string) (net.Conn, error) {
+			return net.Dial("unix", executorSocket)
+		},
+	},
+}
 
 // Public, always-on paths.
 var allowedPaths = map[string]bool{
@@ -61,7 +77,6 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	client := &http.Client{Timeout: 35 * time.Second}
 	req, err := http.NewRequest(http.MethodPost, executorURL+path, r.Body)
 	if err != nil {
 		w.Header().Set("Content-Type", "application/json")
@@ -71,7 +86,7 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := client.Do(req)
+	resp, err := executorClient.Do(req)
 	if err != nil {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadGateway)
