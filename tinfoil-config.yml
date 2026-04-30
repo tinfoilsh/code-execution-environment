@@ -26,7 +26,11 @@ containers:
     cap_drop: ["ALL"]
     security_opt:
       - "no-new-privileges:true"
-    memory: "2g"
+    # 3 GB covers the /workspace tmpfs (512 MB, RAM-backed) plus the
+    # transient buffers held during /snapshot and /restore: a base64
+    # JSON string (~683 MB) and the decoded tar bytes (~512 MB) live
+    # simultaneously for the duration of the handler.
+    memory: "3g"
     cpus: 1.5
     network_mode: "none"
     volumes:
