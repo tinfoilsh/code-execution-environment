@@ -18,8 +18,14 @@ const (
 	executorURL = "http://executor"
 )
 
+// 120s budget covers /snapshot and /restore bulk transfers at the
+// /workspace tmpfs ceiling (512 MB plaintext → ~683 MB after base64
+// in the JSON body). /exec, /read, /write all return in well under a
+// second, and the upstream caller (orchestrator) already enforces a
+// 35s tool-call cap — proxyHandler propagates that cap via r.Context()
+// so this 120s ceiling is just a defense-in-depth backstop.
 var executorClient = &http.Client{
-	Timeout: 35 * time.Second,
+	Timeout: 120 * time.Second,
 	Transport: &http.Transport{
 		DialContext: func(_ context.Context, _, _ string) (net.Conn, error) {
 			return net.Dial("unix", executorSocket)
@@ -77,7 +83,11 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	req, err := http.NewRequest(http.MethodPost, executorURL+path, r.Body)
+	// Inherit the inbound request's context so the orchestrator's
+	// cancellation/deadline propagates to the executor — otherwise the
+	// executor keeps churning on a request whose result is already
+	// going to be discarded.
+	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, executorURL+path, r.Body)
 	if err != nil {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusInternalServerError)
