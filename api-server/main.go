@@ -7,6 +7,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -57,6 +58,20 @@ func init() {
 	restoreOpen.Store(1)
 }
 
+// claimedToken is the access token bound to this container for the rest
+// of its lifetime. Empty until the first authenticated call lands; from
+// then on, every call must present the same token or get 403.
+//
+// Pairs with restoreOpen as defense-in-depth: restoreOpen kills the
+// "attacker injects a tar after user traffic starts" path even if the
+// token leaks; claimedToken kills the "attacker hits a fresh warm-pool
+// container before the orchestrator does" path even if the startup
+// window is still open.
+var (
+	tokenMu      sync.Mutex
+	claimedToken string
+)
+
 func proxyHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -64,6 +79,37 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	path := r.URL.Path
+
+	// Reject unknown paths before the token gate so they can't claim.
+	if path != "/restore" && !allowedPaths[path] {
+		http.NotFound(w, r)
+		return
+	}
+
+	// Token gate. The first call presenting a non-empty access token
+	// claims this container; every later call must match. 401 (missing)
+	// vs 403 (mismatch) is intentional — the orchestrator treats the two
+	// differently (mismatch tears the container down; missing is a caller
+	// bug that wouldn't be helped by tearing down).
+	tok := r.Header.Get("X-Code-Execution-Access-Token")
+	if tok == "" {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		fmt.Fprint(w, `{"error":"missing access token"}`)
+		return
+	}
+	tokenMu.Lock()
+	if claimedToken == "" {
+		claimedToken = tok
+	} else if claimedToken != tok {
+		tokenMu.Unlock()
+		log.Printf("api-server: rejecting %s — access token mismatch", path)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		fmt.Fprint(w, `{"error":"access token mismatch"}`)
+		return
+	}
+	tokenMu.Unlock()
 
 	if path == "/restore" {
 		if restoreOpen.Load() == 0 {
@@ -75,12 +121,9 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 		// Note: we do NOT close the gate here on success — multiple
 		// restore tries (e.g. retries on transient failure) are fine.
 		// The gate closes on the first NON-restore allowlisted call.
-	} else if allowedPaths[path] {
+	} else {
 		// First user-facing call seals restore.
 		restoreOpen.Store(0)
-	} else {
-		http.NotFound(w, r)
-		return
 	}
 
 	// Inherit the inbound request's context so the orchestrator's
