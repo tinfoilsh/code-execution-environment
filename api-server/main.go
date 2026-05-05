@@ -8,7 +8,6 @@ import (
 	"net"
 	"net/http"
 	"sync"
-	"sync/atomic"
 	"time"
 )
 
@@ -42,35 +41,57 @@ var allowedPaths = map[string]bool{
 	"/snapshot": true,
 }
 
-// restoreOpen is the startup-only gate for /restore.
+// gate is the container's per-lifetime access policy. Two one-way bits,
+// both set lazily by incoming requests:
 //
-// Behavior: /restore is allowed to be proxied while restoreOpen == 1.
-// As soon as ANY non-/restore allowlisted path is hit, the gate flips to
-// 0 permanently — once user traffic has begun, restore is dead.
+//   - token: empty until the first valid X-Code-Execution-Access-Token
+//     claims it; afterwards every call must match or get 403.
+//   - restoreOpen: /restore is allowed only while true. Flips false on
+//     the first non-/restore call — once user traffic has begun,
+//     /restore is dead for the container's lifetime.
 //
-// This makes /restore "internal" in the sense that it's only reachable
-// during the brief bootstrap window between container start and first
-// user request. The orchestrator drops the tar in then; nobody can
-// inject one later.
-var restoreOpen atomic.Int32
-
-func init() {
-	restoreOpen.Store(1)
+// They live behind one mutex because every gated call touches both.
+// Defense-in-depth pairing: token blocks an attacker hitting a fresh
+// warm-pool container before the orchestrator does; restoreOpen blocks
+// an attacker injecting a tar after user traffic starts even if the
+// token leaks.
+type gate struct {
+	mu          sync.Mutex
+	token       string
+	restoreOpen bool
 }
 
-// claimedToken is the access token bound to this container for the rest
-// of its lifetime. Empty until the first authenticated call lands; from
-// then on, every call must present the same token or get 403.
+var g = &gate{restoreOpen: true}
+
+// check applies the gate to a single request. ok=false means the caller
+// should short-circuit with the returned status and error message.
 //
-// Pairs with restoreOpen as defense-in-depth: restoreOpen kills the
-// "attacker injects a tar after user traffic starts" path even if the
-// token leaks; claimedToken kills the "attacker hits a fresh warm-pool
-// container before the orchestrator does" path even if the startup
-// window is still open.
-var (
-	tokenMu      sync.Mutex
-	claimedToken string
-)
+// Status mapping (the orchestrator distinguishes these):
+//   - 401 missing token   → caller bug, no container teardown
+//   - 403 token mismatch  → poisoned container, orchestrator tears down
+//   - 410 restore closed  → /restore after user traffic began
+func (g *gate) check(path, tok string) (status int, msg string, ok bool) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if tok == "" {
+		return http.StatusUnauthorized, "missing access token", false
+	}
+	if g.token == "" {
+		g.token = tok
+	} else if g.token != tok {
+		return http.StatusForbidden, "access token mismatch", false
+	}
+	if path == "/restore" {
+		if !g.restoreOpen {
+			return http.StatusGone, "restore window closed", false
+		}
+		// Multiple /restore attempts are fine (transient retries). The
+		// window only closes on a non-restore call.
+	} else {
+		g.restoreOpen = false
+	}
+	return 0, "", true
+}
 
 func proxyHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -80,50 +101,18 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 
 	path := r.URL.Path
 
-	// Reject unknown paths before the token gate so they can't claim.
+	// Reject unknown paths before the gate so they can't claim the token.
 	if path != "/restore" && !allowedPaths[path] {
 		http.NotFound(w, r)
 		return
 	}
 
-	// Token gate. The first call presenting a non-empty access token
-	// claims this container; every later call must match. 401 (missing)
-	// vs 403 (mismatch) is intentional — the orchestrator treats the two
-	// differently (mismatch tears the container down; missing is a caller
-	// bug that wouldn't be helped by tearing down).
-	tok := r.Header.Get("X-Code-Execution-Access-Token")
-	if tok == "" {
+	if status, msg, ok := g.check(path, r.Header.Get("X-Code-Execution-Access-Token")); !ok {
+		log.Printf("api-server: gating %s — %s (%d)", path, msg, status)
 		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusUnauthorized)
-		fmt.Fprint(w, `{"error":"missing access token"}`)
+		w.WriteHeader(status)
+		fmt.Fprintf(w, `{"error":%q}`, msg)
 		return
-	}
-	tokenMu.Lock()
-	if claimedToken == "" {
-		claimedToken = tok
-	} else if claimedToken != tok {
-		tokenMu.Unlock()
-		log.Printf("api-server: rejecting %s — access token mismatch", path)
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusForbidden)
-		fmt.Fprint(w, `{"error":"access token mismatch"}`)
-		return
-	}
-	tokenMu.Unlock()
-
-	if path == "/restore" {
-		if restoreOpen.Load() == 0 {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusGone)
-			fmt.Fprint(w, `{"error":"restore window closed"}`)
-			return
-		}
-		// Note: we do NOT close the gate here on success — multiple
-		// restore tries (e.g. retries on transient failure) are fine.
-		// The gate closes on the first NON-restore allowlisted call.
-	} else {
-		// First user-facing call seals restore.
-		restoreOpen.Store(0)
 	}
 
 	// Inherit the inbound request's context so the orchestrator's
