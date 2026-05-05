@@ -1,14 +1,13 @@
 package main
 
+// /snapshot and /restore handle the workspace tar in plaintext. Encryption
+// happens upstream (the orchestrator hands the plaintext tar to tinfoil-buckets,
+// which encrypts under the user-supplied symmetric key). The executor never
+// sees keys or ciphertext.
+
 import (
 	"archive/tar"
 	"bytes"
-	"crypto/aes"
-	"crypto/cipher"
-	"crypto/ecdh"
-	"crypto/hkdf"
-	"crypto/rand"
-	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -18,22 +17,10 @@ import (
 	"path/filepath"
 )
 
-// snapshotRequest carries the user's X25519 public key (raw 32 bytes,
-// base64url-encoded). The container generates a fresh DEK each call,
-// AES-GCM-encrypts a tar of /workspace under the DEK, and wraps the DEK
-// under the user's pubkey via ephemeral-static ECDH + HKDF + AES-GCM.
-type snapshotRequest struct {
-	Pubkey string `json:"pubkey"`
-}
-
+// snapshotResponse is the plaintext tar of /workspace, base64-encoded.
 type snapshotResponse struct {
-	Ciphertext string `json:"ciphertext"`
-	WrappedDEK string `json:"wrappedDEK"`
+	Tar string `json:"tar"`
 }
-
-// HKDF info label for deriving the DEK-wrapping key from the X25519 shared
-// secret. Distinct from anything else in the system.
-const wrapInfo = "tinfoil-exec-snapshot-wrap-v1"
 
 // tarWorkspace tars the workspace directory and returns the bytes.
 // Includes regular files and directories. Symlinks/devices/etc are skipped.
@@ -149,138 +136,23 @@ func untarInto(root string, data []byte) error {
 	return nil
 }
 
-// aesGCMEncrypt seals plaintext under key, returning nonce||ciphertext||tag
-// (the standard layout for stdlib AEAD: gcm.Seal appends tag to ciphertext;
-// we prepend the nonce).
-func aesGCMEncrypt(key, plaintext []byte) ([]byte, error) {
-	block, err := aes.NewCipher(key)
-	if err != nil {
-		return nil, err
-	}
-	gcm, err := cipher.NewGCM(block)
-	if err != nil {
-		return nil, err
-	}
-	nonce := make([]byte, gcm.NonceSize())
-	if _, err := rand.Read(nonce); err != nil {
-		return nil, err
-	}
-	out := make([]byte, 0, len(nonce)+len(plaintext)+gcm.Overhead())
-	out = append(out, nonce...)
-	out = gcm.Seal(out, nonce, plaintext, nil)
-	return out, nil
-}
-
-// wrapDEK encrypts dek under userPub via ephemeral-static X25519 ECDH +
-// HKDF-SHA256 + AES-256-GCM. Returns: ephPub(32) || nonce(12) || ct || tag.
-func wrapDEK(userPub, dek []byte) ([]byte, error) {
-	curve := ecdh.X25519()
-	userKey, err := curve.NewPublicKey(userPub)
-	if err != nil {
-		return nil, fmt.Errorf("invalid user pubkey: %w", err)
-	}
-	ephPriv, err := curve.GenerateKey(rand.Reader)
-	if err != nil {
-		return nil, err
-	}
-	shared, err := ephPriv.ECDH(userKey)
-	if err != nil {
-		return nil, err
-	}
-
-	// HKDF salt = ephPub || userPub. Binds the wrap to both sides.
-	ephPub := ephPriv.PublicKey().Bytes()
-	salt := make([]byte, 0, len(ephPub)+len(userPub))
-	salt = append(salt, ephPub...)
-	salt = append(salt, userPub...)
-
-	wrapKey, err := hkdf.Key(sha256.New, shared, salt, wrapInfo, 32)
-	if err != nil {
-		return nil, err
-	}
-
-	sealed, err := aesGCMEncrypt(wrapKey, dek)
-	if err != nil {
-		return nil, err
-	}
-
-	out := make([]byte, 0, len(ephPub)+len(sealed))
-	out = append(out, ephPub...)
-	out = append(out, sealed...)
-	return out, nil
-}
-
-// snapshot performs the full snapshot pipeline against the given workspace
-// root. Pulled out of the handler so unit tests can call it directly.
-func snapshot(workspaceRoot string, userPub []byte) (snapshotResponse, error) {
-	if len(userPub) != 32 {
-		return snapshotResponse{}, fmt.Errorf("pubkey must be 32 bytes, got %d", len(userPub))
-	}
-
-	tarBytes, err := tarWorkspace(workspaceRoot)
-	if err != nil {
-		return snapshotResponse{}, fmt.Errorf("tar: %w", err)
-	}
-
-	dek := make([]byte, 32)
-	if _, err := rand.Read(dek); err != nil {
-		return snapshotResponse{}, err
-	}
-
-	ct, err := aesGCMEncrypt(dek, tarBytes)
-	if err != nil {
-		return snapshotResponse{}, fmt.Errorf("encrypt tar: %w", err)
-	}
-
-	wrapped, err := wrapDEK(userPub, dek)
-	if err != nil {
-		return snapshotResponse{}, fmt.Errorf("wrap dek: %w", err)
-	}
-
-	return snapshotResponse{
-		Ciphertext: base64.StdEncoding.EncodeToString(ct),
-		WrappedDEK: base64.StdEncoding.EncodeToString(wrapped),
-	}, nil
-}
-
 func handleSnapshot(w http.ResponseWriter, r *http.Request) {
-	var req snapshotRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		respondError(w, http.StatusBadRequest, "invalid json")
-		return
-	}
-	if req.Pubkey == "" {
-		respondError(w, http.StatusBadRequest, "pubkey is required")
-		return
-	}
-
-	pub, err := base64.RawURLEncoding.DecodeString(req.Pubkey)
+	tarBytes, err := tarWorkspace(workspace)
 	if err != nil {
-		// Be lenient: also try standard base64 (with padding) since callers vary.
-		pub, err = base64.StdEncoding.DecodeString(req.Pubkey)
-		if err != nil {
-			respondError(w, http.StatusBadRequest, "pubkey is not valid base64url")
-			return
-		}
-	}
-	if len(pub) != 32 {
-		respondError(w, http.StatusBadRequest, fmt.Sprintf("pubkey must be 32 bytes, got %d", len(pub)))
+		respondError(w, http.StatusInternalServerError, fmt.Sprintf("tar: %v", err))
 		return
 	}
-
-	resp, err := snapshot(workspace, pub)
-	if err != nil {
-		respondError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	respondJSON(w, http.StatusOK, resp)
+	respondJSON(w, http.StatusOK, snapshotResponse{
+		Tar: base64.StdEncoding.EncodeToString(tarBytes),
+	})
 }
 
 // --- restore (internal-only, gated) -----------------------------------------
 
 type restoreRequest struct {
 	// Tar is the raw plaintext tar bytes, base64-encoded. The orchestrator
-	// has already decrypted the snapshot bundle before calling this.
+	// fetched the snapshot from tinfoil-buckets (which decrypted it under the
+	// user-supplied key) before calling this.
 	Tar string `json:"tar"`
 }
 
