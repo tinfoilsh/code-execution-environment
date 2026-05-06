@@ -22,6 +22,8 @@ var execMu sync.Mutex
 const (
 	workspace  = "/workspace"
 	socketPath = "/run/execsock/exec.sock"
+	// 512 MB /workspace tmpfs after base64 (~683 MB) + JSON envelope.
+	maxRequestBytes = 700 << 20
 )
 
 func resolveP(p string) string {
@@ -159,8 +161,14 @@ func handleRead(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleWrite(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBytes)
 	var req writeRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			respondError(w, http.StatusRequestEntityTooLarge, fmt.Sprintf("payload exceeds %d bytes", maxErr.Limit))
+			return
+		}
 		respondError(w, http.StatusBadRequest, "invalid json")
 		return
 	}

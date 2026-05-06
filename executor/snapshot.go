@@ -10,12 +10,16 @@ import (
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"path/filepath"
 )
+
+// matches /workspace tmpfs ceiling.
+const maxFileBytes = 512 << 20
 
 // snapshotResponse is the plaintext tar of /workspace, base64-encoded.
 type snapshotResponse struct {
@@ -117,6 +121,9 @@ func untarInto(root string, data []byte) error {
 				return err
 			}
 		case tar.TypeReg:
+			if hdr.Size > maxFileBytes {
+				return fmt.Errorf("tar entry %q exceeds %d bytes", hdr.Name, maxFileBytes)
+			}
 			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 				return err
 			}
@@ -124,7 +131,7 @@ func untarInto(root string, data []byte) error {
 			if err != nil {
 				return err
 			}
-			if _, err := io.Copy(f, tr); err != nil {
+			if _, err := io.CopyN(f, tr, hdr.Size); err != nil && err != io.EOF {
 				f.Close()
 				return err
 			}
@@ -161,8 +168,14 @@ type restoreResponse struct {
 }
 
 func handleRestore(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBytes)
 	var req restoreRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			respondError(w, http.StatusRequestEntityTooLarge, fmt.Sprintf("payload exceeds %d bytes", maxErr.Limit))
+			return
+		}
 		respondError(w, http.StatusBadRequest, "invalid json")
 		return
 	}
