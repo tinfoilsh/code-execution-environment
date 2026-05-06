@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/subtle"
 	"fmt"
 	"io"
 	"log"
@@ -78,7 +79,7 @@ func (g *gate) check(path, tok string) (status int, msg string, ok bool) {
 	}
 	if g.token == "" {
 		g.token = tok
-	} else if g.token != tok {
+	} else if subtle.ConstantTimeCompare([]byte(g.token), []byte(tok)) != 1 {
 		return http.StatusForbidden, "access token mismatch", false
 	}
 	if path == "/restore" {
