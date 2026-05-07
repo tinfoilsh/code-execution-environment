@@ -34,14 +34,6 @@ var executorClient = &http.Client{
 	},
 }
 
-// Public, always-on paths.
-var allowedPaths = map[string]bool{
-	"/exec":     true,
-	"/read":     true,
-	"/write":    true,
-	"/snapshot": true,
-}
-
 // gate is the container's per-lifetime access policy. Two one-way bits,
 // both set lazily by incoming requests:
 //
@@ -102,12 +94,6 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 
 	path := r.URL.Path
 
-	// Reject unknown paths before the gate so they can't claim the token.
-	if path != "/restore" && !allowedPaths[path] {
-		http.NotFound(w, r)
-		return
-	}
-
 	if status, msg, ok := g.check(path, r.Header.Get("X-Code-Execution-Access-Token")); !ok {
 		log.Printf("api-server: gating %s — %s (%d)", path, msg, status)
 		w.Header().Set("Content-Type", "application/json")
@@ -155,6 +141,7 @@ func main() {
 	mux.HandleFunc("/write", proxyHandler)
 	mux.HandleFunc("/snapshot", proxyHandler)
 	mux.HandleFunc("/restore", proxyHandler)
+
 	mux.HandleFunc("/health", healthHandler)
 
 	log.Println("api server listening on :8000")
