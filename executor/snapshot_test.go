@@ -43,6 +43,17 @@ func openTestRoot(t *testing.T) *os.Root {
 	return root
 }
 
+// tarWorkspaceBytes adapts the streaming tarWorkspace for tests that
+// want the bytes in hand.
+func tarWorkspaceBytes(t *testing.T, root *os.Root) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	if err := tarWorkspace(root, &buf); err != nil {
+		t.Fatalf("tarWorkspace: %v", err)
+	}
+	return buf.Bytes()
+}
+
 // readTar collects {path: contents} for regular files in a tar blob.
 func readTar(t *testing.T, data []byte) map[string]string {
 	t.Helper()
@@ -88,11 +99,7 @@ func TestTarWorkspaceRoundTrip(t *testing.T) {
 		}
 	}
 
-	tarBytes, err := tarWorkspace(root)
-	if err != nil {
-		t.Fatalf("tarWorkspace: %v", err)
-	}
-
+	tarBytes := tarWorkspaceBytes(t, root)
 	got := readTar(t, tarBytes)
 	for rel, want := range files {
 		if got[rel] != want {
@@ -103,10 +110,7 @@ func TestTarWorkspaceRoundTrip(t *testing.T) {
 
 func TestTarWorkspaceEmpty(t *testing.T) {
 	root := openTestRoot(t)
-	tarBytes, err := tarWorkspace(root)
-	if err != nil {
-		t.Fatalf("tarWorkspace: %v", err)
-	}
+	tarBytes := tarWorkspaceBytes(t, root)
 	got := readTar(t, tarBytes)
 	if len(got) != 0 {
 		t.Errorf("expected empty tar, got %d entries", len(got))
@@ -132,10 +136,7 @@ func TestTarWorkspaceSkipsSymlinks(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	tarBytes, err := tarWorkspace(root)
-	if err != nil {
-		t.Fatalf("tarWorkspace: %v", err)
-	}
+	tarBytes := tarWorkspaceBytes(t, root)
 
 	tr := tar.NewReader(bytes.NewReader(tarBytes))
 	names := map[string]byte{}
@@ -160,12 +161,17 @@ func TestTarWorkspaceSkipsSymlinks(t *testing.T) {
 	}
 }
 
-// TestHandleSnapshotReturnsTar exercises the HTTP handler against the real
-// workspace constant. Skips when /workspace doesn't exist on the host.
-func TestHandleSnapshotReturnsTar(t *testing.T) {
-	if workspaceRoot == nil {
-		t.Skipf("no %s on this machine", workspace)
+// Exercises handleSnapshot's manual JSON framing end-to-end.
+// Swaps workspaceRoot so it runs on dev machines.
+func TestHandleSnapshotStreaming(t *testing.T) {
+	root := openTestRoot(t)
+	if err := os.WriteFile(filepath.Join(root.Name(), "hello.txt"), []byte("streamed"), 0o644); err != nil {
+		t.Fatal(err)
 	}
+	prev := workspaceRoot
+	workspaceRoot = root
+	defer func() { workspaceRoot = prev }()
+
 	r := httptest.NewRequest(http.MethodPost, "/snapshot", nil)
 	w := httptest.NewRecorder()
 	handleSnapshot(w, r)
@@ -175,13 +181,14 @@ func TestHandleSnapshotReturnsTar(t *testing.T) {
 	}
 	var resp snapshotResponse
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("decode: %v", err)
+		t.Fatalf("decode: %v: body=%q", err, w.Body.String())
 	}
-	if resp.Tar == "" {
-		t.Errorf("missing tar field: %+v", resp)
+	tarBytes, err := base64.StdEncoding.DecodeString(resp.Tar)
+	if err != nil {
+		t.Fatalf("tar field is not valid base64: %v", err)
 	}
-	if _, err := base64.StdEncoding.DecodeString(resp.Tar); err != nil {
-		t.Errorf("tar field is not valid base64: %v", err)
+	if got := readTar(t, tarBytes); got["hello.txt"] != "streamed" {
+		t.Errorf("round-trip mismatch: got %+v", got)
 	}
 }
 

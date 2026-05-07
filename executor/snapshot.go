@@ -14,23 +14,21 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
 )
 
-// snapshotResponse is the plaintext tar of /workspace, base64-encoded.
+// snapshotResponse exists for test decoding; handleSnapshot frames JSON manually.
 type snapshotResponse struct {
 	Tar string `json:"tar"`
 }
 
-// tarWorkspace tars the contents of root and returns the bytes.
-//
-// Whitelist: only regular files and directories are written; symlinks,
+// Whitelist tar: regular files and directories only — symlinks,
 // FIFOs, sockets, devices are silently dropped.
-func tarWorkspace(root *os.Root) ([]byte, error) {
-	var buf bytes.Buffer
-	tw := tar.NewWriter(&buf)
+func tarWorkspace(root *os.Root, w io.Writer) error {
+	tw := tar.NewWriter(w)
 
 	err := fs.WalkDir(root.FS(), ".", func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -76,24 +74,13 @@ func tarWorkspace(root *os.Root) ([]byte, error) {
 		return nil
 	})
 	if err != nil {
-		return nil, err
+		return err
 	}
-	if err := tw.Close(); err != nil {
-		return nil, err
-	}
-	return buf.Bytes(), nil
+	return tw.Close()
 }
 
-// untarInto extracts a tar archive into root.
-//
-// Whitelist: only TypeDir and TypeReg entries are honored; everything
-// else (symlinks, hardlinks, devices, FIFOs, future tar types) falls
-// through the empty default and is dropped.
-//
-// Path safety is delegated to *os.Root, which uses openat2 with
-// RESOLVE_BENEATH on Linux: any "..", absolute path, or symlink that
-// would resolve outside root is refused by the kernel. The total
-// payload size is capped upstream by /workspace tmpfs (512 MiB)
+// Whitelist untar: TypeDir + TypeReg only. Path escape is caught by
+// *os.Root (openat2 RESOLVE_BENEATH); size by the /workspace tmpfs cap.
 func untarInto(root *os.Root, data []byte) error {
 	tr := tar.NewReader(bytes.NewReader(data))
 	for {
@@ -128,15 +115,24 @@ func untarInto(root *os.Root, data []byte) error {
 	return nil
 }
 
+// Streams tar → base64 → response writer so peak RAM is independent
+// of workspace size. Status is committed before tar runs; mid-stream
+// errors only log and truncate. Manual JSON framing is safe because
+// base64.StdEncoding produces no JSON-escapable bytes.
 func handleSnapshot(w http.ResponseWriter, r *http.Request) {
-	tarBytes, err := tarWorkspace(workspaceRoot)
-	if err != nil {
-		respondError(w, http.StatusInternalServerError, fmt.Sprintf("tar: %v", err))
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	io.WriteString(w, `{"tar":"`)
+	enc := base64.NewEncoder(base64.StdEncoding, w)
+	if err := tarWorkspace(workspaceRoot, enc); err != nil {
+		log.Printf("snapshot: %v", err)
 		return
 	}
-	respondJSON(w, http.StatusOK, snapshotResponse{
-		Tar: base64.StdEncoding.EncodeToString(tarBytes),
-	})
+	if err := enc.Close(); err != nil {
+		log.Printf("snapshot: base64 close: %v", err)
+		return
+	}
+	io.WriteString(w, `"}`)
 }
 
 // --- restore (internal-only, gated) -----------------------------------------
