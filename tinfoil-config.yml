@@ -11,7 +11,7 @@ containers:
     cap_drop: ["ALL"]
     security_opt:
       - "no-new-privileges:true"
-    memory: "256m"
+    memory: "1g"
     cpus: 0.5
     volumes:
       - "execsock:/run/execsock"
@@ -30,7 +30,7 @@ containers:
     # transient buffers held during /snapshot and /restore: a base64
     # JSON string (~683 MB) and the decoded tar bytes (~512 MB) live
     # simultaneously for the duration of the handler.
-    memory: "3g"
+    memory: "6g"
     cpus: 1.5
     network_mode: "none"
     volumes:
