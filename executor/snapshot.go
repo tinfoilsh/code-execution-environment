@@ -1,9 +1,6 @@
 package main
 
-// /snapshot and /restore handle the workspace tar in plaintext. Encryption
-// happens upstream (the orchestrator hands the plaintext tar to tinfoil-buckets,
-// which encrypts under the user-supplied symmetric key). The executor never
-// sees keys or ciphertext.
+// /snapshot and /restore handle the workspace tar in plaintext. Encryption happens upstream.
 
 import (
 	"archive/tar"
@@ -25,8 +22,7 @@ type snapshotResponse struct {
 	Tar string `json:"tar"`
 }
 
-// Whitelist tar: regular files and directories only — symlinks,
-// FIFOs, sockets, devices are silently dropped.
+// Whitelist tar: regular files and directories only
 func tarWorkspace(root *os.Root, w io.Writer) error {
 	tw := tar.NewWriter(w)
 
@@ -135,12 +131,8 @@ func handleSnapshot(w http.ResponseWriter, r *http.Request) {
 	io.WriteString(w, `"}`)
 }
 
-// --- restore (internal-only, gated) -----------------------------------------
-
 type restoreRequest struct {
-	// Tar is the raw plaintext tar bytes, base64-encoded. The orchestrator
-	// fetched the snapshot from tinfoil-buckets (which decrypted it under the
-	// user-supplied key) before calling this.
+	// Tar is the raw plaintext tar bytes, base64-encoded.
 	Tar string `json:"tar"`
 }
 
