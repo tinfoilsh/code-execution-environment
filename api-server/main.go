@@ -44,10 +44,8 @@ var executorClient = &http.Client{
 //     /restore is dead for the container's lifetime.
 //
 // They live behind one mutex because every gated call touches both.
-// Defense-in-depth pairing: token blocks an attacker hitting a fresh
-// warm-pool container before the orchestrator does; restoreOpen blocks
-// an attacker injecting a tar after user traffic starts even if the
-// token leaks.
+// 1. the shared accessToken between the caller & environment locks them together.
+// 2. restoreOpen enforces the environment lifecycle
 type gate struct {
 	mu          sync.Mutex
 	token       string
