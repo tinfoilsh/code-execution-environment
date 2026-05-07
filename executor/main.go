@@ -207,8 +207,6 @@ func main() {
 	mux.HandleFunc("/read", handleRead)
 	mux.HandleFunc("/write", handleWrite)
 	mux.HandleFunc("/snapshot", handleSnapshot)
-	// /restore is reachable on this internal socket. The api-server proxy
-	// gates it behind a startup-only flag.
 	mux.HandleFunc("/restore", handleRestore)
 	mux.HandleFunc("/health", handleHealth)
 

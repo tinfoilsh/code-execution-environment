@@ -34,25 +34,45 @@ var executorClient = &http.Client{
 	},
 }
 
-// gate is the container's per-lifetime access policy. Two one-way bits,
-// both set lazily by incoming requests:
-//
-//   - token: empty until the first valid X-Code-Execution-Access-Token
-//     claims it; afterwards every call must match or get 403.
-//   - restoreOpen: /restore is allowed only while true. Flips false on
-//     the first non-/restore call — once user traffic has begun,
-//     /restore is dead for the container's lifetime.
-//
-// They live behind one mutex because every gated call touches both.
-// 1. the shared accessToken between the caller & environment locks them together.
-// 2. restoreOpen enforces the environment lifecycle
+// gate is the container's per-lifetime access policy:
+//  1. the shared access token locks caller and environment together for
+//     the container's lifetime. First valid token claims it, every
+//     subsequent call must match.
+//  2. the lifecycle state machine enforces: warm → active → killed.
 type gate struct {
-	mu          sync.Mutex
-	token       string
-	restoreOpen bool
+	mu    sync.Mutex
+	token string
+	state lifecycle
 }
 
-var g = &gate{restoreOpen: true}
+// lifecycle is the container's session state.
+//
+//   - warm: no user traffic yet. /restore is allowed (idempotent retry);
+//     /exec, /read, /write, /snapshot transition to active.
+//   - active: user traffic has begun. /restore returns 410; everything
+//     else proceeds. A successful /snapshot transitions to killed.
+//   - killed: snapshot taken, session over. Every call returns 410.
+type lifecycle int
+
+const (
+	lifecycleWarm lifecycle = iota
+	lifecycleActive
+	lifecycleKilled
+)
+
+func (l lifecycle) String() string {
+	switch l {
+	case lifecycleWarm:
+		return "warm"
+	case lifecycleActive:
+		return "active"
+	case lifecycleKilled:
+		return "killed"
+	}
+	return "unknown"
+}
+
+var g = &gate{state: lifecycleWarm}
 
 // check applies the gate to a single request. ok=false means the caller
 // should short-circuit with the returned status and error message.
@@ -60,7 +80,7 @@ var g = &gate{restoreOpen: true}
 // Status
 //   - 401 missing token
 //   - 403 token mismatch
-//   - 410 restore closed
+//   - 410 lifecycle disallows this call
 func (g *gate) check(path, tok string) (status int, msg string, ok bool) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -72,16 +92,29 @@ func (g *gate) check(path, tok string) (status int, msg string, ok bool) {
 	} else if subtle.ConstantTimeCompare([]byte(g.token), []byte(tok)) != 1 {
 		return http.StatusForbidden, "access token mismatch", false
 	}
-	if path == "/restore" {
-		if !g.restoreOpen {
+
+	switch g.state {
+	case lifecycleKilled:
+		return http.StatusGone, "container session ended", false
+	case lifecycleActive:
+		if path == "/restore" {
 			return http.StatusGone, "restore window closed", false
 		}
-		// Multiple /restore attempts are fine (transient retries). The
-		// window only closes on a non-restore call.
-	} else {
-		g.restoreOpen = false
+	case lifecycleWarm:
+		// /restore is idempotent and stays in warm
+		if path != "/restore" {
+			g.state = lifecycleActive
+		}
 	}
 	return 0, "", true
+}
+
+// markKilled is called after a successful /snapshot transfer to close
+// the container for any further calls.
+func (g *gate) markKilled() {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.state = lifecycleKilled
 }
 
 func proxyHandler(w http.ResponseWriter, r *http.Request) {
@@ -124,7 +157,16 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(resp.StatusCode)
-	io.Copy(w, resp.Body)
+	_, copyErr := io.Copy(w, resp.Body)
+
+	// A successful /snapshot is the terminal event in the container's
+	// lifecycle. Only flip to killed if both the executor returned 200
+	// and we streamed the body without error — a mid-stream failure
+	// leaves the orchestrator without the snapshot, and it needs the
+	// gate open to retry.
+	if path == "/snapshot" && resp.StatusCode == http.StatusOK && copyErr == nil {
+		g.markKilled()
+	}
 }
 
 func healthHandler(w http.ResponseWriter, r *http.Request) {
