@@ -131,11 +131,13 @@ func TestProxy_ForwardsStatusAndBody(t *testing.T) {
 	}
 }
 
-// A clean /snapshot 200 must transition the gate to killed.
-func TestProxy_KillsAfterSnapshot(t *testing.T) {
+// A clean /snapshot 200 with the completion trailer must kill the gate.
+func TestProxy_KillsAfterSnapshotWithTrailer(t *testing.T) {
 	defer withFakeExecutor(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Trailer", snapshotTrailer)
 		w.WriteHeader(http.StatusOK)
 		io.WriteString(w, `{"tar":"AAAA"}`)
+		w.Header().Set(snapshotTrailer, "ok")
 	})()
 
 	req := httptest.NewRequest(http.MethodPost, "/snapshot", nil)
@@ -148,6 +150,28 @@ func TestProxy_KillsAfterSnapshot(t *testing.T) {
 	}
 	if g.state != lifecycleKilled {
 		t.Errorf("state: got %s, want killed", g.state)
+	}
+}
+
+// 200 with no completion trailer simulates an executor that wrote 200,
+// then errored mid-tar and returned without setting the trailer. The
+// gate must stay open so the orchestrator can retry.
+func TestProxy_DoesNotKillWithoutTrailer(t *testing.T) {
+	defer withFakeExecutor(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		io.WriteString(w, `{"tar":"truncated`) // no trailer, no closing }
+	})()
+
+	req := httptest.NewRequest(http.MethodPost, "/snapshot", nil)
+	req.Header.Set("X-Code-Execution-Access-Token", "tok")
+	w := httptest.NewRecorder()
+	proxyHandler(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status: got %d, want 200", w.Code)
+	}
+	if g.state == lifecycleKilled {
+		t.Error("gate should not be killed without snapshot completion trailer")
 	}
 }
 

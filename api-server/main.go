@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"maps"
 	"net"
 	"net/http"
 	"sync"
@@ -150,19 +151,32 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	defer resp.Body.Close()
 
+	// Forward any trailers the executor announced so the orchestrator
+	// sees them too.
+	if announced := resp.Header.Get("Trailer"); announced != "" {
+		w.Header().Set("Trailer", announced)
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(resp.StatusCode)
 	_, copyErr := io.Copy(w, resp.Body)
 
+	// resp.Trailer is populated only after the body has been fully read.
+	maps.Copy(w.Header(), resp.Trailer)
+
 	// A successful /snapshot is the terminal event in the container's
-	// lifecycle. Only flip to killed if both the executor returned 200
-	// and we streamed the body without error — a mid-stream failure
-	// leaves the orchestrator without the snapshot, and it needs the
-	// gate open to retry.
-	if path == "/snapshot" && resp.StatusCode == http.StatusOK && copyErr == nil {
+	// lifecycle. The executor signals clean completion via the snapshot
+	// trailer
+	if path == "/snapshot" &&
+		resp.StatusCode == http.StatusOK &&
+		copyErr == nil &&
+		resp.Trailer.Get(snapshotTrailer) == "ok" {
 		g.markKilled()
 	}
 }
+
+// snapshotTrailer must match executor's snapshot trailer name. Kept as a
+// string here so api-server doesn't have to import the executor package.
+const snapshotTrailer = "X-Snapshot-Status"
 
 func healthHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")

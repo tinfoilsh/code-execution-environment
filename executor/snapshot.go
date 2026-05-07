@@ -22,6 +22,9 @@ type snapshotResponse struct {
 	Tar string `json:"tar"`
 }
 
+// snapshotTrailer is set to "ok" only on the success path of /snapshot.
+const snapshotTrailer = "X-Snapshot-Status"
+
 // Whitelist tar: regular files and directories only
 func tarWorkspace(root *os.Root, w io.Writer) error {
 	tw := tar.NewWriter(w)
@@ -115,8 +118,11 @@ func untarInto(root *os.Root, data []byte) error {
 // of workspace size. Status is committed before tar runs; mid-stream
 // errors only log and truncate. Manual JSON framing is safe because
 // base64.StdEncoding produces no JSON-escapable bytes.
+//
+// The snapshotTrailer is declared up-front and only set to "ok" once done
 func handleSnapshot(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Trailer", snapshotTrailer)
 	w.WriteHeader(http.StatusOK)
 	io.WriteString(w, `{"tar":"`)
 	enc := base64.NewEncoder(base64.StdEncoding, w)
@@ -129,6 +135,7 @@ func handleSnapshot(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	io.WriteString(w, `"}`)
+	w.Header().Set(snapshotTrailer, "ok")
 }
 
 type restoreRequest struct {
