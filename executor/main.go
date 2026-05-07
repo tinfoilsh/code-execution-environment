@@ -26,11 +26,25 @@ const (
 	maxRequestBytes = 700 << 20
 )
 
-func resolveP(p string) string {
-	if filepath.IsAbs(p) {
-		return p
+// workspaceRoot is the *os.Root handle to /workspace shared by /read,
+// /write, /snapshot, /restore. openat2(RESOLVE_BENEATH) rejects any
+// path that escapes. /exec runs unsandboxed (cmd.Dir = workspace).
+var workspaceRoot *os.Root
+
+// resolveP strips an optional /workspace/ prefix; "..", escapes, and
+// empty paths are rejected downstream by *os.Root.
+func resolveP(p string) (string, error) {
+	if p == "" {
+		return "", errors.New("path is required")
 	}
-	return filepath.Join(workspace, p)
+	if filepath.IsAbs(p) {
+		rel, err := filepath.Rel(workspace, p)
+		if err != nil {
+			return "", fmt.Errorf("path outside %s: %s", workspace, p)
+		}
+		return rel, nil
+	}
+	return p, nil
 }
 
 type execRequest struct {
@@ -127,14 +141,14 @@ func handleRead(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusBadRequest, "invalid json")
 		return
 	}
-	if req.Path == "" {
-		respondError(w, http.StatusBadRequest, "path is required")
+
+	rel, err := resolveP(req.Path)
+	if err != nil {
+		respondError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
-	resolved := resolveP(req.Path)
-
-	info, err := os.Stat(resolved)
+	info, err := workspaceRoot.Stat(rel)
 	if err != nil {
 		if os.IsNotExist(err) {
 			respondError(w, http.StatusNotFound, fmt.Sprintf("file not found: %s", req.Path))
@@ -148,7 +162,7 @@ func handleRead(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	data, err := os.ReadFile(resolved)
+	data, err := workspaceRoot.ReadFile(rel)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -172,15 +186,10 @@ func handleWrite(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusBadRequest, "invalid json")
 		return
 	}
-	if req.Path == "" {
-		respondError(w, http.StatusBadRequest, "path is required")
-		return
-	}
 
-	resolved := resolveP(req.Path)
-
-	if err := os.MkdirAll(filepath.Dir(resolved), 0o755); err != nil {
-		respondError(w, http.StatusInternalServerError, err.Error())
+	rel, err := resolveP(req.Path)
+	if err != nil {
+		respondError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
@@ -190,7 +199,12 @@ func handleWrite(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := os.WriteFile(resolved, data, 0o644); err != nil {
+	if err := workspaceRoot.MkdirAll(filepath.Dir(rel), 0o755); err != nil {
+		respondError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	if err := workspaceRoot.WriteFile(rel, data, 0o644); err != nil {
 		respondError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -207,6 +221,13 @@ func healthHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func main() {
+	root, err := os.OpenRoot(workspace)
+	if err != nil {
+		log.Fatalf("open workspace root %s: %v", workspace, err)
+	}
+	defer root.Close()
+	workspaceRoot = root
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("/exec", handleExec)
 	mux.HandleFunc("/read", handleRead)

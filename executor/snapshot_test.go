@@ -13,6 +13,36 @@ import (
 	"testing"
 )
 
+// TestMain initializes the workspaceRoot global when /workspace exists on
+// the host, so the handler-level tests (TestHandleSnapshotReturnsTar,
+// TestRestoreRoundTrip) can exercise handleSnapshot/handleRestore which
+// read it. When /workspace is absent (typical dev machine) those tests
+// skip and workspaceRoot is left nil.
+func TestMain(m *testing.M) {
+	if _, err := os.Stat(workspace); err == nil {
+		root, err := os.OpenRoot(workspace)
+		if err != nil {
+			panic(err)
+		}
+		workspaceRoot = root
+		defer root.Close()
+	}
+	os.Exit(m.Run())
+}
+
+// openTestRoot opens t.TempDir() as an *os.Root and registers a Close
+// cleanup. Mirrors how main() opens workspaceRoot, so unit tests exercise
+// the same code path as production.
+func openTestRoot(t *testing.T) *os.Root {
+	t.Helper()
+	root, err := os.OpenRoot(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { root.Close() })
+	return root
+}
+
 // readTar collects {path: contents} for regular files in a tar blob.
 func readTar(t *testing.T, data []byte) map[string]string {
 	t.Helper()
@@ -40,7 +70,8 @@ func readTar(t *testing.T, data []byte) map[string]string {
 // TestTarWorkspaceRoundTrip writes some files under a temp workspace, tars
 // them via tarWorkspace, then verifies the contents round-trip.
 func TestTarWorkspaceRoundTrip(t *testing.T) {
-	dir := t.TempDir()
+	root := openTestRoot(t)
+	dir := root.Name()
 
 	files := map[string]string{
 		"hello.txt":         "hello world",
@@ -57,7 +88,7 @@ func TestTarWorkspaceRoundTrip(t *testing.T) {
 		}
 	}
 
-	tarBytes, err := tarWorkspace(dir)
+	tarBytes, err := tarWorkspace(root)
 	if err != nil {
 		t.Fatalf("tarWorkspace: %v", err)
 	}
@@ -71,8 +102,8 @@ func TestTarWorkspaceRoundTrip(t *testing.T) {
 }
 
 func TestTarWorkspaceEmpty(t *testing.T) {
-	dir := t.TempDir()
-	tarBytes, err := tarWorkspace(dir)
+	root := openTestRoot(t)
+	tarBytes, err := tarWorkspace(root)
 	if err != nil {
 		t.Fatalf("tarWorkspace: %v", err)
 	}
@@ -82,11 +113,58 @@ func TestTarWorkspaceEmpty(t *testing.T) {
 	}
 }
 
+// TestTarWorkspaceSkipsSymlinks verifies the whitelist: a symlink in the
+// workspace must not appear in the tar at all (neither as a symlink entry
+// nor as a regular file with the symlink target's contents).
+func TestTarWorkspaceSkipsSymlinks(t *testing.T) {
+	root := openTestRoot(t)
+	dir := root.Name()
+
+	if err := os.WriteFile(filepath.Join(dir, "real.txt"), []byte("real"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// In-workspace symlink — should be skipped (not even a symlink entry).
+	if err := os.Symlink("real.txt", filepath.Join(dir, "alias.txt")); err != nil {
+		t.Fatal(err)
+	}
+	// Out-of-workspace symlink — definitely should be skipped.
+	if err := os.Symlink("/etc/passwd", filepath.Join(dir, "passwd")); err != nil {
+		t.Fatal(err)
+	}
+
+	tarBytes, err := tarWorkspace(root)
+	if err != nil {
+		t.Fatalf("tarWorkspace: %v", err)
+	}
+
+	tr := tar.NewReader(bytes.NewReader(tarBytes))
+	names := map[string]byte{}
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("tar read: %v", err)
+		}
+		names[hdr.Name] = hdr.Typeflag
+	}
+	if _, ok := names["alias.txt"]; ok {
+		t.Errorf("alias.txt should have been skipped, got typeflag %c", names["alias.txt"])
+	}
+	if _, ok := names["passwd"]; ok {
+		t.Errorf("passwd symlink should have been skipped, got typeflag %c", names["passwd"])
+	}
+	if names["real.txt"] != tar.TypeReg {
+		t.Errorf("real.txt missing or wrong type: %v", names)
+	}
+}
+
 // TestHandleSnapshotReturnsTar exercises the HTTP handler against the real
 // workspace constant. Skips when /workspace doesn't exist on the host.
 func TestHandleSnapshotReturnsTar(t *testing.T) {
-	if _, err := os.Stat(workspace); err != nil {
-		t.Skipf("no %s on this machine: %v", workspace, err)
+	if workspaceRoot == nil {
+		t.Skipf("no %s on this machine", workspace)
 	}
 	r := httptest.NewRequest(http.MethodPost, "/snapshot", nil)
 	w := httptest.NewRecorder()
@@ -110,8 +188,8 @@ func TestHandleSnapshotReturnsTar(t *testing.T) {
 // TestRestoreRoundTrip: tar a directory, hand it to handleRestore, verify
 // the files land in /workspace. Skips if /workspace isn't writable here.
 func TestRestoreRoundTrip(t *testing.T) {
-	if _, err := os.Stat(workspace); err != nil {
-		t.Skipf("no %s on this machine: %v", workspace, err)
+	if workspaceRoot == nil {
+		t.Skipf("no %s on this machine", workspace)
 	}
 	// Build a tar with one file.
 	var buf bytes.Buffer
@@ -153,7 +231,8 @@ func TestRestoreRoundTrip(t *testing.T) {
 }
 
 func TestUntarRejectsPathTraversal(t *testing.T) {
-	dir := t.TempDir()
+	root := openTestRoot(t)
+
 	var buf bytes.Buffer
 	tw := tar.NewWriter(&buf)
 	hdr := &tar.Header{
@@ -166,7 +245,50 @@ func TestUntarRejectsPathTraversal(t *testing.T) {
 	tw.Write([]byte("bad"))
 	tw.Close()
 
-	if err := untarInto(dir, buf.Bytes()); err == nil {
+	if err := untarInto(root, buf.Bytes()); err == nil {
 		t.Error("expected path traversal to be rejected")
+	}
+}
+
+// TestUntarRejectsSymlinkEscape verifies that the kernel-level os.Root
+// guard (RESOLVE_BENEATH) blocks an attempt to write through a symlink
+// that was planted in the workspace before restore.
+//
+// This is the attack the hardening exists for: a symlink to /etc/passwd
+// gets dropped into /workspace (e.g. by a prior /exec), then a tar entry
+// for that name tries to write through it. With os.Root, the file open
+// fails because /etc/passwd is outside the root.
+func TestUntarRejectsSymlinkEscape(t *testing.T) {
+	root := openTestRoot(t)
+	dir := root.Name()
+
+	// Plant a symlink that targets outside the workspace root.
+	if err := os.Symlink("/etc/passwd", filepath.Join(dir, "victim")); err != nil {
+		t.Fatal(err)
+	}
+
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	body := []byte("attacker controlled")
+	hdr := &tar.Header{
+		Name:     "victim",
+		Mode:     0o644,
+		Size:     int64(len(body)),
+		Typeflag: tar.TypeReg,
+	}
+	tw.WriteHeader(hdr)
+	tw.Write(body)
+	tw.Close()
+
+	if err := untarInto(root, buf.Bytes()); err == nil {
+		t.Error("expected open through escaping symlink to be rejected")
+	}
+
+	// Verify /etc/passwd is unchanged (would require root anyway, but the
+	// open should have failed before any write).
+	if data, err := os.ReadFile("/etc/passwd"); err == nil {
+		if bytes.Contains(data, body) {
+			t.Fatalf("/etc/passwd was modified by the test! contents: %s", data)
+		}
 	}
 }
