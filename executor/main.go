@@ -17,8 +17,6 @@ import (
 	"time"
 )
 
-var execMu sync.Mutex
-
 const (
 	workspace  = "/workspace"
 	socketPath = "/run/execsock/exec.sock"
@@ -31,21 +29,7 @@ const (
 // path that escapes. /exec runs unsandboxed (cmd.Dir = workspace).
 var workspaceRoot *os.Root
 
-// resolveP strips an optional /workspace/ prefix; "..", escapes, and
-// empty paths are rejected downstream by *os.Root.
-func resolveP(p string) (string, error) {
-	if p == "" {
-		return "", errors.New("path is required")
-	}
-	if filepath.IsAbs(p) {
-		rel, err := filepath.Rel(workspace, p)
-		if err != nil {
-			return "", fmt.Errorf("path outside %s: %s", workspace, p)
-		}
-		return rel, nil
-	}
-	return p, nil
-}
+var execMu sync.Mutex
 
 type execRequest struct {
 	Command string `json:"command"`
@@ -74,16 +58,6 @@ type writeRequest struct {
 type writeResponse struct {
 	Path string `json:"path"`
 	Size int    `json:"size"`
-}
-
-func respondJSON(w http.ResponseWriter, status int, v any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(v)
-}
-
-func respondError(w http.ResponseWriter, status int, msg string) {
-	respondJSON(w, status, map[string]string{"error": msg})
 }
 
 func handleExec(w http.ResponseWriter, r *http.Request) {
@@ -215,7 +189,7 @@ func handleWrite(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func healthHandler(w http.ResponseWriter, r *http.Request) {
+func handleHealth(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Write([]byte(`{"status":"ok"}`))
 }
@@ -236,7 +210,7 @@ func main() {
 	// /restore is reachable on this internal socket. The api-server proxy
 	// gates it behind a startup-only flag.
 	mux.HandleFunc("/restore", handleRestore)
-	mux.HandleFunc("/health", healthHandler)
+	mux.HandleFunc("/health", handleHealth)
 
 	if err := os.Remove(socketPath); err != nil && !os.IsNotExist(err) {
 		log.Fatalf("removing stale socket: %v", err)
@@ -251,4 +225,30 @@ func main() {
 
 	log.Printf("executor listening on unix:%s", socketPath)
 	log.Fatal(http.Serve(listener, mux))
+}
+
+func respondJSON(w http.ResponseWriter, status int, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	json.NewEncoder(w).Encode(v)
+}
+
+func respondError(w http.ResponseWriter, status int, msg string) {
+	respondJSON(w, status, map[string]string{"error": msg})
+}
+
+// resolveP strips an optional /workspace/ prefix; "..", escapes, and
+// empty paths are rejected downstream by *os.Root.
+func resolveP(p string) (string, error) {
+	if p == "" {
+		return "", errors.New("path is required")
+	}
+	if filepath.IsAbs(p) {
+		rel, err := filepath.Rel(workspace, p)
+		if err != nil {
+			return "", fmt.Errorf("path outside %s: %s", workspace, p)
+		}
+		return rel, nil
+	}
+	return p, nil
 }

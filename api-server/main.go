@@ -67,10 +67,10 @@ var g = &gate{restoreOpen: true}
 // check applies the gate to a single request. ok=false means the caller
 // should short-circuit with the returned status and error message.
 //
-// Status mapping (the orchestrator distinguishes these):
-//   - 401 missing token   → caller bug, no container teardown
-//   - 403 token mismatch  → poisoned container, orchestrator tears down
-//   - 410 restore closed  → /restore after user traffic began
+// Status
+//   - 401 missing token
+//   - 403 token mismatch
+//   - 410 restore closed
 func (g *gate) check(path, tok string) (status int, msg string, ok bool) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
