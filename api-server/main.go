@@ -19,12 +19,9 @@ const (
 	executorURL = "http://executor"
 )
 
-// 120s budget covers /snapshot and /restore bulk transfers at the
-// /workspace tmpfs ceiling (512 MB plaintext → ~683 MB after base64
-// in the JSON body). /exec, /read, /write all return in well under a
-// second, and the upstream caller (orchestrator) already enforces a
-// 35s tool-call cap — proxyHandler propagates that cap via r.Context()
-// so this 120s ceiling is just a defense-in-depth backstop.
+// 120s budget to cover  /snapshot and /restore bulk transfers at the
+// /workspace tmpfs ceiling (512 MB plaintext → ~683 MB after base64 in the JSON body).
+// It's the responsibility of the upstream caller to enforce a ceiling on eg tool calls
 var executorClient = &http.Client{
 	Timeout: 120 * time.Second,
 	Transport: &http.Transport{
@@ -32,17 +29,6 @@ var executorClient = &http.Client{
 			return net.Dial("unix", executorSocket)
 		},
 	},
-}
-
-// gate is the container's per-lifetime access policy:
-//  1. the shared access token locks caller and environment together for
-//     the container's lifetime. First valid token claims it, every
-//     subsequent call must match.
-//  2. the lifecycle state machine enforces: warm → active → killed.
-type gate struct {
-	mu    sync.Mutex
-	token string
-	state lifecycle
 }
 
 // lifecycle is the container's session state.
@@ -70,6 +56,13 @@ func (l lifecycle) String() string {
 		return "killed"
 	}
 	return "unknown"
+}
+
+// gate is the container's per-lifetime access policy
+type gate struct {
+	mu    sync.Mutex
+	token string
+	state lifecycle
 }
 
 var g = &gate{state: lifecycleWarm}
@@ -117,6 +110,14 @@ func (g *gate) markKilled() {
 	g.state = lifecycleKilled
 }
 
+// writeJSONError responds with a JSON {"error": "<msg>"} body and the
+// given status. Uses %q so quotes/control characters in msg are escaped.
+func writeJSONError(w http.ResponseWriter, status int, msg string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	fmt.Fprintf(w, `{"error":%q}`, msg)
+}
+
 func proxyHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -127,9 +128,7 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 
 	if status, msg, ok := g.check(path, r.Header.Get("X-Code-Execution-Access-Token")); !ok {
 		log.Printf("api-server: gating %s — %s (%d)", path, msg, status)
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(status)
-		fmt.Fprintf(w, `{"error":%q}`, msg)
+		writeJSONError(w, status, msg)
 		return
 	}
 
@@ -139,18 +138,14 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 	// going to be discarded.
 	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, executorURL+path, r.Body)
 	if err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusInternalServerError)
-		fmt.Fprintf(w, `{"error":"%s"}`, err.Error())
+		writeJSONError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := executorClient.Do(req)
 	if err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusBadGateway)
-		fmt.Fprintf(w, `{"error":"executor unavailable: %s"}`, err.Error())
+		writeJSONError(w, http.StatusBadGateway, "executor unavailable: "+err.Error())
 		return
 	}
 	defer resp.Body.Close()
