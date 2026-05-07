@@ -178,9 +178,31 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 // string here so api-server doesn't have to import the executor package.
 const snapshotTrailer = "X-Snapshot-Status"
 
+// healthHandler reports api-server health AND executor health. Returns
+// 200 only when both are reachable; otherwise 503
 func healthHandler(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	w.Write([]byte(`{"status":"ok"}`))
+	if !executorHealthy(r.Context()) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+}
+
+// executorHealthy probes the executor's /health over the unix socket
+func executorHealthy(ctx context.Context) bool {
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, executorURL+"/health", nil)
+	if err != nil {
+		return false
+	}
+	resp, err := executorClient.Do(req)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	return resp.StatusCode == http.StatusOK
 }
 
 func main() {

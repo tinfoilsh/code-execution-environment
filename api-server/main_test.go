@@ -175,6 +175,36 @@ func TestProxy_DoesNotKillWithoutTrailer(t *testing.T) {
 	}
 }
 
+// /health returns 200 when executor responds 200.
+func TestHealth_BothHealthy(t *testing.T) {
+	defer withFakeExecutor(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"status":"ok"}`))
+	})()
+
+	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	w := httptest.NewRecorder()
+	healthHandler(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status: got %d, want 200", w.Code)
+	}
+}
+
+// /health returns 503 when executor returns non-200.
+func TestHealth_ExecutorDown(t *testing.T) {
+	defer withFakeExecutor(t, func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "down", http.StatusInternalServerError)
+	})()
+
+	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	w := httptest.NewRecorder()
+	healthHandler(w, req)
+
+	if w.Code != http.StatusServiceUnavailable {
+		t.Errorf("status: got %d, want 503", w.Code)
+	}
+}
+
 // A non-200 /snapshot must not kill the gate — orchestrator can retry.
 func TestProxy_DoesNotKillOnSnapshotError(t *testing.T) {
 	defer withFakeExecutor(t, func(w http.ResponseWriter, r *http.Request) {
