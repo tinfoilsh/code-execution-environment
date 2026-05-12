@@ -108,7 +108,12 @@ func (g *gate) checkLifecycle(path string) (status int, msg string, ok bool) {
 		}
 	case lifecycleWarm:
 		// /restore is idempotent and stays in warm
-		if path != "/restore" {
+		switch path {
+		case "/restore":
+			// idempotent - stay warm
+		case "/snapshot":
+			return http.StatusGone, "cannot snapshot a warm container", false
+		default:
 			g.state = lifecycleActive
 		}
 	}
