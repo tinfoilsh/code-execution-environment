@@ -119,7 +119,7 @@ func TestProxy_ForwardsStatusAndBody(t *testing.T) {
 	})()
 
 	req := httptest.NewRequest(http.MethodPost, "/exec", strings.NewReader(`{}`))
-	req.Header.Set("X-Code-Execution-Access-Token", "tok")
+	req.Header.Set(authTokenHeader, "tok")
 	w := httptest.NewRecorder()
 	proxyHandler(w, req)
 
@@ -141,7 +141,7 @@ func TestProxy_KillsAfterSnapshotWithTrailer(t *testing.T) {
 	})()
 
 	req := httptest.NewRequest(http.MethodPost, "/snapshot", nil)
-	req.Header.Set("X-Code-Execution-Access-Token", "tok")
+	req.Header.Set(authTokenHeader, "tok")
 	w := httptest.NewRecorder()
 	proxyHandler(w, req)
 
@@ -163,7 +163,7 @@ func TestProxy_DoesNotKillWithoutTrailer(t *testing.T) {
 	})()
 
 	req := httptest.NewRequest(http.MethodPost, "/snapshot", nil)
-	req.Header.Set("X-Code-Execution-Access-Token", "tok")
+	req.Header.Set(authTokenHeader, "tok")
 	w := httptest.NewRecorder()
 	proxyHandler(w, req)
 
@@ -205,6 +205,42 @@ func TestHealth_ExecutorDown(t *testing.T) {
 	}
 }
 
+// /snapshot bypasses the auth-token lock — the orchestrator triggers
+// eviction snapshots without a per-user auth token in flight. The
+// request must pass through to the executor even with no auth header.
+func TestProxy_SnapshotBypassesAuth(t *testing.T) {
+	defer withFakeExecutor(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		io.WriteString(w, `{"tar":"AAAA"}`)
+	})()
+
+	req := httptest.NewRequest(http.MethodPost, "/snapshot", nil)
+	// Intentionally no authTokenHeader set.
+	w := httptest.NewRecorder()
+	proxyHandler(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status: got %d, want 200 (snapshot must bypass auth)", w.Code)
+	}
+}
+
+// User-driven paths still require the auth token. /exec without one
+// must 401.
+func TestProxy_ExecRequiresAuthToken(t *testing.T) {
+	defer withFakeExecutor(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})()
+
+	req := httptest.NewRequest(http.MethodPost, "/exec", strings.NewReader(`{}`))
+	// No authTokenHeader.
+	w := httptest.NewRecorder()
+	proxyHandler(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("status: got %d, want 401", w.Code)
+	}
+}
+
 // A non-200 /snapshot must not kill the gate — orchestrator can retry.
 func TestProxy_DoesNotKillOnSnapshotError(t *testing.T) {
 	defer withFakeExecutor(t, func(w http.ResponseWriter, r *http.Request) {
@@ -212,7 +248,7 @@ func TestProxy_DoesNotKillOnSnapshotError(t *testing.T) {
 	})()
 
 	req := httptest.NewRequest(http.MethodPost, "/snapshot", nil)
-	req.Header.Set("X-Code-Execution-Access-Token", "tok")
+	req.Header.Set(authTokenHeader, "tok")
 	w := httptest.NewRecorder()
 	proxyHandler(w, req)
 

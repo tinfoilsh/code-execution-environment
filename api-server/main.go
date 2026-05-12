@@ -59,7 +59,7 @@ func (l lifecycle) String() string {
 	return "unknown"
 }
 
-// gate is the container's per-lifetime access policy
+// gate is the container's per-lifetime access policy.
 type gate struct {
 	mu    sync.Mutex
 	token string
@@ -68,25 +68,37 @@ type gate struct {
 
 var g = &gate{state: lifecycleWarm}
 
-// check applies the gate to a single request. ok=false means the caller
-// should short-circuit with the returned status and error message.
+const authTokenHeader = "X-Code-Execution-Container-Auth-Token"
+
+// checkAuth enforces the auth-token lock. First caller's non-empty
+// token locks the gate; later callers must match.
 //
 // Status
 //   - 401 missing token
 //   - 403 token mismatch
-//   - 410 lifecycle disallows this call
-func (g *gate) check(path, tok string) (status int, msg string, ok bool) {
+func (g *gate) checkAuth(tok string) (status int, msg string, ok bool) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if tok == "" {
-		return http.StatusUnauthorized, "missing access token", false
+		return http.StatusUnauthorized, "missing container auth token", false
 	}
 	if g.token == "" {
 		g.token = tok
-	} else if subtle.ConstantTimeCompare([]byte(g.token), []byte(tok)) != 1 {
-		return http.StatusForbidden, "access token mismatch", false
+		return 0, "", true
 	}
+	if subtle.ConstantTimeCompare([]byte(g.token), []byte(tok)) != 1 {
+		return http.StatusForbidden, "container auth token mismatch", false
+	}
+	return 0, "", true
+}
 
+// checkLifecycle enforces only the state machine
+//
+// Status
+//   - 410 lifecycle disallows this call
+func (g *gate) checkLifecycle(path string) (status int, msg string, ok bool) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
 	switch g.state {
 	case lifecycleKilled:
 		return http.StatusGone, "container session ended", false
@@ -101,6 +113,14 @@ func (g *gate) check(path, tok string) (status int, msg string, ok bool) {
 		}
 	}
 	return 0, "", true
+}
+
+// check runs auth + lifecycle for user-driven paths.
+func (g *gate) check(path, tok string) (status int, msg string, ok bool) {
+	if status, msg, ok := g.checkAuth(tok); !ok {
+		return status, msg, false
+	}
+	return g.checkLifecycle(path)
 }
 
 // markKilled is called after a successful /snapshot transfer to close
@@ -127,7 +147,16 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 
 	path := r.URL.Path
 
-	if status, msg, ok := g.check(path, r.Header.Get("X-Code-Execution-Access-Token")); !ok {
+	// /snapshot bypasses the auth-token lock as it needs to be called in the background.
+	var status int
+	var msg string
+	var ok bool
+	if path == "/snapshot" {
+		status, msg, ok = g.checkLifecycle(path)
+	} else {
+		status, msg, ok = g.check(path, r.Header.Get(authTokenHeader))
+	}
+	if !ok {
 		log.Printf("api-server: gating %s — %s (%d)", path, msg, status)
 		writeJSONError(w, status, msg)
 		return
