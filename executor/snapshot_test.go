@@ -237,6 +237,57 @@ func TestRestoreRoundTrip(t *testing.T) {
 	}
 }
 
+// TestRestoreReplacesWorkspace verifies /restore is authoritative,
+// not additive: files that exist before the restore but not in the
+// incoming tar are gone afterwards.
+func TestRestoreReplacesWorkspace(t *testing.T) {
+	root := openTestRoot(t)
+	dir := root.Name()
+
+	// Pre-existing junk that should NOT survive the restore.
+	if err := os.WriteFile(filepath.Join(dir, "stale.txt"), []byte("stale"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "stale-subdir"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "stale-subdir", "nested.txt"), []byte("nested"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Tar containing only fresh.txt.
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	body := []byte("fresh")
+	if err := tw.WriteHeader(&tar.Header{
+		Name: "fresh.txt", Mode: 0o644, Size: int64(len(body)), Typeflag: tar.TypeReg,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tw.Write(body); err != nil {
+		t.Fatal(err)
+	}
+	tw.Close()
+
+	if err := restoreInto(root, buf.Bytes()); err != nil {
+		t.Fatalf("restoreInto: %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(dir, "stale.txt")); !os.IsNotExist(err) {
+		t.Errorf("stale.txt should have been removed; stat err = %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "stale-subdir")); !os.IsNotExist(err) {
+		t.Errorf("stale-subdir should have been removed; stat err = %v", err)
+	}
+	got, err := os.ReadFile(filepath.Join(dir, "fresh.txt"))
+	if err != nil {
+		t.Fatalf("read fresh.txt: %v", err)
+	}
+	if string(got) != "fresh" {
+		t.Errorf("fresh.txt: got %q, want %q", got, "fresh")
+	}
+}
+
 func TestUntarRejectsPathTraversal(t *testing.T) {
 	root := openTestRoot(t)
 

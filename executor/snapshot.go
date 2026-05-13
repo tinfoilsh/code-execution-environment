@@ -78,6 +78,32 @@ func tarWorkspace(root *os.Root, w io.Writer) error {
 	return tw.Close()
 }
 
+// removes every top-level entry within root. Pre-ran on restore
+func clearRoot(root *os.Root) error {
+	d, err := root.Open(".")
+	if err != nil {
+		return err
+	}
+	names, err := d.Readdirnames(-1)
+	d.Close()
+	if err != nil {
+		return err
+	}
+	for _, name := range names {
+		if err := root.RemoveAll(name); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func restoreInto(root *os.Root, data []byte) error {
+	if err := clearRoot(root); err != nil {
+		return err
+	}
+	return untarInto(root, data)
+}
+
 // Whitelist untar: TypeDir + TypeReg only. Path escape is caught by
 // *os.Root (openat2 RESOLVE_BENEATH); size by the /workspace tmpfs cap.
 func untarInto(root *os.Root, data []byte) error {
@@ -168,7 +194,7 @@ func handleRestore(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusBadRequest, "tar is not valid base64")
 		return
 	}
-	if err := untarInto(workspaceRoot, data); err != nil {
+	if err := restoreInto(workspaceRoot, data); err != nil {
 		respondError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
