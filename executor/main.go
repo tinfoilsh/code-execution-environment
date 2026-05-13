@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -79,6 +80,11 @@ func handleExec(w http.ResponseWriter, r *http.Request) {
 
 	cmd := exec.CommandContext(ctx, "bash", "-c", req.Command)
 	cmd.Dir = workspace
+	// Put bash in its own process group so timeout / cancellation kills grandchildren
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error {
+		return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	}
 
 	var stdoutBuf, stderrBuf bytes.Buffer
 	cmd.Stdout = &stdoutBuf
