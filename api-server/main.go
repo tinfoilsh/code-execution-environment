@@ -185,16 +185,16 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	defer resp.Body.Close()
 
-	// Forward any trailers the executor announced so the orchestrator
-	// sees them too.
-	if announced := resp.Header.Get("Trailer"); announced != "" {
-		w.Header().Set("Trailer", announced)
+	// Resend trailer showing streaming finished
+	for k := range resp.Trailer {
+		w.Header().Add("Trailer", k)
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(resp.StatusCode)
 	_, copyErr := io.Copy(w, resp.Body)
 
-	// resp.Trailer is populated only after the body has been fully read.
+	// resp.Trailer values are populated only after the body has been
+	// fully read.
 	maps.Copy(w.Header(), resp.Trailer)
 
 	// A successful /snapshot is the terminal event in the container's
