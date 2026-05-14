@@ -15,7 +15,7 @@ Executor <-> api server
 - ffmpeg
 - pandoc
 - tesseract (OCR)
-- git, jq
+- jq
 
 **Python packages** (direct, pinned in [`executor/deps/requirements.in`](executor/deps/requirements.in); full transitive lock in [`requirements.txt`](executor/deps/requirements.txt))
 

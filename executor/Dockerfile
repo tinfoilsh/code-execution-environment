@@ -45,7 +45,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
         ffmpeg \
         g++ \
         gcc \
-        git \
         jq \
         make \
         nodejs \
