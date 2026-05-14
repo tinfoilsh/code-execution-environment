@@ -22,7 +22,7 @@ containers:
     read_only: true
     tmpfs:
       /workspace: "size=512m,mode=1777"
-      /tmp: "size=64m,mode=1777"
+      /tmp: "size=3g,mode=1777"
     cap_drop: ["ALL"]
     security_opt:
       - "no-new-privileges:true"
