@@ -20,9 +20,9 @@
 # Requires: uv (https://github.com/astral-sh/uv) and npm.
 
 # Quarantine cutoff — refuse versions published on or after this date.
-# Bump it when you re-lock. uv reads it via --exclude-newer; npm via
-# --before.
-CUTOFF := 2026-05-07
+# Sliding 7-day window: anything published in the past week is treated as
+# unproven and excluded. uv reads it via --exclude-newer; npm via --before.
+CUTOFF := $(shell python3 -c "from datetime import datetime, timedelta, timezone; print((datetime.now(timezone.utc) - timedelta(days=7)).date())")
 
 NPM_PACKAGES := \
 	docx \
