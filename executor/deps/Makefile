@@ -19,6 +19,11 @@
 #
 # Requires: uv (https://github.com/astral-sh/uv) and npm.
 
+# Quarantine cutoff — refuse versions published on or after this date.
+# Bump it when you re-lock. uv reads it via --exclude-newer; npm via
+# --before.
+CUTOFF := 2026-05-07
+
 NPM_PACKAGES := \
 	docx \
 	markdownlint \
@@ -38,8 +43,15 @@ lock-python:
 	uv pip compile --generate-hashes \
 		--python-version 3.12 \
 		--python-platform x86_64-unknown-linux-gnu \
+		--exclude-newer $(CUTOFF) \
 		-o requirements.txt requirements.in
 	python3 scripts/filter-hashes.py requirements.txt
 
 lock-node:
-	npm install --save-exact --package-lock-only --omit=dev $(addsuffix @latest,$(NPM_PACKAGES))
+	# Delete the existing lockfile so --before drives a fresh resolution.
+	# Without this, npm treats the existing tree as authoritative and the
+	# cutoff has no effect on transitive picks.
+	rm -f package-lock.json
+	npm install --save-exact --package-lock-only --omit=dev \
+		--before $(CUTOFF) \
+		$(addsuffix @latest,$(NPM_PACKAGES))
