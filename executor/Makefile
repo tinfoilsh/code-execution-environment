@@ -21,7 +21,11 @@ NPM_PACKAGES := \
 lock: lock-python lock-node
 
 lock-python:
-	uv pip compile --generate-hashes --python-version 3.12 -o requirements.txt requirements.in
+	uv pip compile --generate-hashes \
+		--python-version 3.12 \
+		--python-platform x86_64-unknown-linux-gnu \
+		-o requirements.txt requirements.in
+	python3 scripts/filter-hashes.py requirements.txt
 
 lock-node:
 	npm install --save-exact --package-lock-only --omit=dev $(addsuffix @latest,$(NPM_PACKAGES))
