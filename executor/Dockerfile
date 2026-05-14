@@ -36,9 +36,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && apt-get autoremove -y \
     && rm -rf /var/lib/apt/lists/*
 
-# Python deps — pinned + hashed (regenerate via `make lock`).
+# Python deps — pinned + hashed (regenerate via `cd deps && make lock`).
+# Only the locked output (requirements.txt) is copied in; deps/requirements.in
+# and deps/scripts/ are inputs to `make lock` and never reach the image.
 # --require-hashes makes pip refuse any wheel whose SHA256 doesn't match.
-COPY requirements.txt /tmp/requirements.txt
+COPY deps/requirements.txt /tmp/requirements.txt
 RUN pip3 install --no-cache-dir --break-system-packages --require-hashes \
         -r /tmp/requirements.txt \
     && rm /tmp/requirements.txt
@@ -46,7 +48,7 @@ RUN pip3 install --no-cache-dir --break-system-packages --require-hashes \
 # Node deps — pinned via package-lock.json. `npm ci` refuses to run if
 # package.json and the lockfile disagree, and verifies each tarball
 # against the lockfile's sha512 integrity field.
-COPY package.json package-lock.json /opt/node-tools/
+COPY deps/package.json deps/package-lock.json /opt/node-tools/
 RUN cd /opt/node-tools && npm ci --omit=dev && npm cache clean --force
 ENV PATH="/opt/node-tools/node_modules/.bin:${PATH}"
 
