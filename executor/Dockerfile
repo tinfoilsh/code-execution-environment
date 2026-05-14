@@ -11,34 +11,42 @@ FROM ubuntu:24.04@sha256:c4a8d5503dfb2a3eb8ab5f807da5bc69a85730fb49b5cfca2330194
 ENV DEBIAN_FRONTEND=noninteractive \
     HOME=/tmp
 
-# System tooling + Python 3.12. curl/gnupg are transient — only needed to
-# pull NodeSource's apt repo, then purged so the runtime image has no
-# network-fetching tools. apt's own GPG signature verification is the
-# supply-chain check for this layer.
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# NodeSource's apt signing key, committed at executor/nodesource.gpg.
+# Fingerprint 6F71 F525 2828 41EE DAF8 51B4 2F59 B5F9 9B1B E0B4 (NSolid).
+# Refresh: curl https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
+#          | gpg --dearmor > executor/nodesource.gpg
+# Trust root lives in the repo rather than in whatever HTTPS endpoint
+# resolves at build time, so the image is reproducible from source alone.
+COPY nodesource.gpg /etc/apt/keyrings/nodesource.gpg
+
+# System tooling + Python 3.12 + Node.js 22. Two-phase apt to handle the
+# CA bootstrap: the base ubuntu:24.04 image has no CA bundle, so the first
+# `apt-get update` would fail TLS verification on NodeSource's https
+# Release file and silently fall back to Ubuntu universe (which ships an
+# older nodejs without npm). Install ca-certificates from the http-signed
+# Ubuntu archive first, then enable the NodeSource repo, then install
+# everything in one second pass.
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \
+    && echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_22.x nodistro main" \
+        > /etc/apt/sources.list.d/nodesource.list \
+    && apt-get update && apt-get install -y --no-install-recommends \
         bash \
-        ca-certificates \
-        curl \
         ffmpeg \
         g++ \
         gcc \
         git \
-        gnupg \
         jq \
         make \
+        nodejs \
         pandoc \
         python3 \
         python3-pip \
         tesseract-ocr \
-    && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
-    && apt-get install -y --no-install-recommends nodejs \
-    && apt-get purge -y curl gnupg \
-    && apt-get autoremove -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Python deps — pinned + hashed (regenerate via `cd deps && make lock`).
 # Only the locked output (requirements.txt) is copied in; deps/requirements.in
-# and deps/scripts/ are inputs to `make lock` and never reach the image.
+# and deps/Makefile are inputs to `make lock` and never reach the image.
 # --require-hashes makes pip refuse any wheel whose SHA256 doesn't match.
 COPY deps/requirements.txt /tmp/requirements.txt
 RUN pip3 install --no-cache-dir --break-system-packages --require-hashes \

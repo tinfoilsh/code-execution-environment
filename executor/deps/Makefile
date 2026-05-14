@@ -9,9 +9,6 @@
 #
 #   Local-only (never reaches the image):
 #     - requirements.in        (unpinned source for requirements.txt)
-#     - scripts/filter-hashes.py  (prunes uv's per-version hash list to
-#                                  artifacts compatible with the deploy
-#                                  target — cpython 3.12, linux x86_64 glibc)
 #     - Makefile               (this file)
 #
 # Bump every dep to its latest stable release and regenerate the locked
@@ -45,7 +42,6 @@ lock-python:
 		--python-platform x86_64-unknown-linux-gnu \
 		--exclude-newer $(CUTOFF) \
 		-o requirements.txt requirements.in
-	python3 scripts/filter-hashes.py requirements.txt
 
 lock-node:
 	# Delete the existing lockfile so --before drives a fresh resolution.
