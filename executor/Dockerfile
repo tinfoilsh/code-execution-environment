@@ -8,6 +8,9 @@ COPY *.go ./
 RUN CGO_ENABLED=0 go build -trimpath -mod=readonly -o /executor .
 
 FROM ubuntu:24.04@sha256:c4a8d5503dfb2a3eb8ab5f807da5bc69a85730fb49b5cfca2330194ebcc41c7b
+# Date-stamped Ubuntu archive snapshot. Pinning makes the apt layer
+# reproducible byte-for-byte across rebuilds (same date → same packages → same image hash). 
+ARG UBUNTU_SNAPSHOT=20260507T000000Z
 ENV DEBIAN_FRONTEND=noninteractive \
     HOME=/tmp
 
@@ -19,14 +22,22 @@ ENV DEBIAN_FRONTEND=noninteractive \
 # resolves at build time, so the image is reproducible from source alone.
 COPY nodesource.gpg /etc/apt/keyrings/nodesource.gpg
 
-# System tooling + Python 3.12 + Node.js 22. Two-phase apt to handle the
-# CA bootstrap: the base ubuntu:24.04 image has no CA bundle, so the first
-# `apt-get update` would fail TLS verification on NodeSource's https
-# Release file and silently fall back to Ubuntu universe (which ships an
-# older nodejs without npm). Install ca-certificates from the http-signed
-# Ubuntu archive first, then enable the NodeSource repo, then install
-# everything in one second pass.
+# System tooling + Python 3.12 + Node.js 22. Three-phase apt:
+#   1. The base ubuntu:24.04 image has no CA bundle, so install
+#      ca-certificates first from the default http Ubuntu archive
+#      (no TLS, no CAs needed).
+#   2. Replace the deb822 ubuntu.sources file with snapshot URLs
+#      pinned to UBUNTU_SNAPSHOT, and add NodeSource's repo. Both are
+#      https and require the CA bundle from step 1. check-valid-until=no
+#      is needed because old snapshots' Release headers expire; the GPG
+#      signature is still valid.
+#   3. apt-get update + install everything from the pinned mirrors.
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -f /etc/apt/sources.list.d/ubuntu.sources \
+    && { echo "deb [check-valid-until=no] https://snapshot.ubuntu.com/ubuntu/${UBUNTU_SNAPSHOT} noble main restricted universe multiverse" ; \
+         echo "deb [check-valid-until=no] https://snapshot.ubuntu.com/ubuntu/${UBUNTU_SNAPSHOT} noble-updates main restricted universe multiverse" ; \
+         echo "deb [check-valid-until=no] https://snapshot.ubuntu.com/ubuntu/${UBUNTU_SNAPSHOT} noble-security main restricted universe multiverse" ; \
+       } > /etc/apt/sources.list \
     && echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_22.x nodistro main" \
         > /etc/apt/sources.list.d/nodesource.list \
     && apt-get update && apt-get install -y --no-install-recommends \
