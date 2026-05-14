@@ -50,7 +50,11 @@ RUN pip3 install --no-cache-dir --break-system-packages --require-hashes \
 # against the lockfile's sha512 integrity field.
 COPY deps/package.json deps/package-lock.json /opt/node-tools/
 RUN cd /opt/node-tools && npm ci --omit=dev && npm cache clean --force
-ENV PATH="/opt/node-tools/node_modules/.bin:${PATH}"
+# PATH puts npm-installed CLIs (tsc, tsx, marked, ...) on the agent's PATH.
+# NODE_PATH lets `require()` from any cwd resolve modules under /opt/node-tools/
+# (docx, pdf-lib, sharp, etc.); without it Node only searches ./node_modules.
+ENV PATH="/opt/node-tools/node_modules/.bin:${PATH}" \
+    NODE_PATH=/opt/node-tools/node_modules
 
 COPY --from=build /executor /executor
 RUN mkdir -p /workspace /run/execsock \
