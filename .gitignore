@@ -28,5 +28,7 @@ __pycache__/
 api-server/api-server
 executor/executor
 
+executor/node_modules/
+
 # Logs
 *.log

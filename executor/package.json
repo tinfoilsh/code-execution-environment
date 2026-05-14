@@ -1,0 +1,19 @@
+{
+  "name": "executor-node-tools",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Node CLIs/libraries baked into the executor image. Versions are pinned via package-lock.json. Regenerate with `make lock`.",
+  "dependencies": {
+    "docx": "9.6.1",
+    "markdownlint": "0.40.0",
+    "marked": "18.0.3",
+    "pdf-lib": "1.17.1",
+    "pdfjs-dist": "5.7.284",
+    "pptxgenjs": "4.0.1",
+    "remark": "15.0.1",
+    "sharp": "0.34.5",
+    "ts-node": "10.9.2",
+    "tsx": "4.21.0",
+    "typescript": "6.0.3"
+  }
+}
