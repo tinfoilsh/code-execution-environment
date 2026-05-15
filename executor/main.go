@@ -225,6 +225,8 @@ func main() {
 	defer uRoot.Close()
 	uploadsRoot = uRoot
 
+	seedDemoUploads()
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("/exec", handleExec)
 	mux.HandleFunc("/read", handleRead)

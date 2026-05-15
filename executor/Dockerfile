@@ -75,6 +75,11 @@ ENV PATH="/opt/node-tools/node_modules/.bin:${PATH}" \
     NODE_PATH=/opt/node-tools/node_modules
 
 COPY --from=build /executor /executor
+# Demo-only: files copied into /user-uploads at startup by seedDemoUploads().
+# Delete this COPY (and executor/demo-uploads/, executor/demo_seed.go, and
+# the seedDemoUploads call in main.go) when the real upload manifest path
+# is wired all the way through.
+COPY demo-uploads/ /opt/demo-uploads/
 RUN mkdir -p /workspace /run/execsock \
     && chown 1000:1000 /workspace /run/execsock
 # bashuser (uid 1001) is the identity /exec drops bash into. It exists so
