@@ -246,6 +246,8 @@ func main() {
 	mux.HandleFunc("/write", proxyHandler)
 	mux.HandleFunc("/snapshot", proxyHandler)
 	mux.HandleFunc("/restore", proxyHandler)
+	mux.HandleFunc("/sync-uploads/manifest", proxyHandler)
+	mux.HandleFunc("/sync-uploads/blobs", proxyHandler)
 
 	mux.HandleFunc("/health", healthHandler)
 

@@ -77,6 +77,19 @@ ENV PATH="/opt/node-tools/node_modules/.bin:${PATH}" \
 COPY --from=build /executor /executor
 RUN mkdir -p /workspace /run/execsock \
     && chown 1000:1000 /workspace /run/execsock
+# bashuser (uid 1001) is the identity /exec drops bash into. It exists so
+# /user-uploads can be owned by uid 1000 (executor) with mode 755 — bashuser
+# falls into "other" perms (rx) and cannot mutate uploaded files.
+RUN groupadd -g 1001 bashuser \
+    && useradd -u 1001 -g 1001 -M -s /bin/bash bashuser
+# File capabilities on the executor binary so SETUID/SETGID survive the
+# uid drop from root → 1000. Without this, --cap-add SETUID is in the
+# bounding set but not the effective set for a non-root process, and
+# /exec's setuid(1001) call returns EPERM.
+RUN apt-get update && apt-get install -y --no-install-recommends libcap2-bin \
+    && setcap cap_setuid,cap_setgid+ep /executor \
+    && apt-get purge -y libcap2-bin && apt-get autoremove -y \
+    && rm -rf /var/lib/apt/lists/*
 VOLUME /run/execsock
 WORKDIR /workspace
 CMD ["/executor"]

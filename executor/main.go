@@ -23,6 +23,10 @@ const (
 	socketPath = "/run/execsock/exec.sock"
 	// 512 MB /workspace tmpfs after base64 (~683 MB) + JSON envelope.
 	maxRequestBytes = 700 << 20
+	// bashUID/bashGID is the identity /exec drops bash into. Distinct from
+	// the executor process's uid (1000) so ro /user-uploads can be enforced
+	bashUID = 1001
+	bashGID = 1001
 )
 
 // workspaceRoot is the *os.Root handle to /workspace shared by /read,
@@ -80,8 +84,11 @@ func handleExec(w http.ResponseWriter, r *http.Request) {
 
 	cmd := exec.CommandContext(ctx, "bash", "-c", req.Command)
 	cmd.Dir = workspace
-	// Put bash in its own process group so timeout / cancellation kills grandchildren
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		// Put bash in its own process group so timeout / cancellation kills grandchildren.
+		Setpgid:    true,
+		Credential: &syscall.Credential{Uid: bashUID, Gid: bashGID},
+	}
 	cmd.Cancel = func() error {
 		return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 	}
@@ -105,6 +112,9 @@ func handleExec(w http.ResponseWriter, r *http.Request) {
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) {
 			exitCode = exitErr.ExitCode()
+		} else {
+			respondError(w, http.StatusInternalServerError, "exec failed: "+err.Error())
+			return
 		}
 	}
 
@@ -208,12 +218,21 @@ func main() {
 	defer root.Close()
 	workspaceRoot = root
 
+	uRoot, err := os.OpenRoot(uploadsDir)
+	if err != nil {
+		log.Fatalf("open uploads root %s: %v", uploadsDir, err)
+	}
+	defer uRoot.Close()
+	uploadsRoot = uRoot
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("/exec", handleExec)
 	mux.HandleFunc("/read", handleRead)
 	mux.HandleFunc("/write", handleWrite)
 	mux.HandleFunc("/snapshot", handleSnapshot)
 	mux.HandleFunc("/restore", handleRestore)
+	mux.HandleFunc("/sync-uploads/manifest", handleSyncUploadsManifest)
+	mux.HandleFunc("/sync-uploads/blobs", handleSyncUploadsBlobs)
 	mux.HandleFunc("/health", handleHealth)
 
 	if err := os.Remove(socketPath); err != nil && !os.IsNotExist(err) {

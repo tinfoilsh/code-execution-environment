@@ -23,7 +23,11 @@ containers:
     tmpfs:
       /workspace: "size=512m,mode=1777"
       /tmp: "size=3g,mode=1777"
+      # /user-uploads is owned by uid 1000 (the executor)
+      /user-uploads: "size=256m,mode=755,uid=1000,gid=1000"
     cap_drop: ["ALL"]
+    # SETUID/SETGID let the executor spawn bash as uid 1001 to enforce ro /user-uploads
+    cap_add: ["SETUID", "SETGID"]
     security_opt:
       - "no-new-privileges:true"
     memory: "6g" # Could be smaller but no need
@@ -40,4 +44,6 @@ shim:
     - /write
     - /snapshot
     - /restore
+    - /sync-uploads/manifest
+    - /sync-uploads/blobs
     - /health
