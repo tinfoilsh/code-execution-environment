@@ -68,14 +68,15 @@ type syncBlobsResponse struct {
 }
 
 func validateUploadFilename(name string) error {
-	if name == "" {
+	if name == "" || name == "." {
 		return errors.New("filename is required")
 	}
-	if filepath.IsAbs(name) {
-		return fmt.Errorf("filename must be relative: %s", name)
+	// IsLocal rejects absolute paths and anything that walks outside the
+	// root via .. segments — including "../escape" which Clean leaves as-is.
+	if !filepath.IsLocal(name) {
+		return fmt.Errorf("filename must be a local relative path: %s", name)
 	}
-	clean := filepath.Clean(name)
-	if clean != name || clean == "." || clean == ".." {
+	if filepath.Clean(name) != name {
 		return fmt.Errorf("filename is not canonical: %s", name)
 	}
 	return nil
