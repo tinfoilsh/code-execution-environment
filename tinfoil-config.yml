@@ -1,16 +1,15 @@
-shim-version: v0.3.18@sha256:7d9f98be78c91ede89f43c948a12d084fae34312effe9395ca7ed572991cb561
-cvm-version: 0.7.5
+cvm-version: 0.10.0
 cpus: 2
 memory: 8192
+
+networks:
+  web:
+    egress: open
 
 containers:
   - name: "api-server"
     image: "ghcr.io/tinfoilsh/code-execution-environment/api-server@sha256:e1cb4f491e9a4849af892e8cdf6c857a00de78a92fcd86e4a0d836f25c06a7f4" # v0.0.17
     user: "1000:1000"
-    read_only: true
-    cap_drop: ["ALL"]
-    security_opt:
-      - "no-new-privileges:true"
     memory: "1g"
     cpus: 0.5
     volumes:
@@ -18,26 +17,23 @@ containers:
 
   - name: "executor"
     image: "ghcr.io/tinfoilsh/code-execution-environment/executor@sha256:d47e359082bedb8d8950da2b988caf2689a833fbe64190b77742bc95ccbc76e0" # v0.0.17
+    networks: [web]
     user: "1000:1000"
-    read_only: true
     tmpfs:
       /workspace: "size=512m,mode=1777"
       /tmp: "size=3g,mode=1777"
       # /user-uploads is owned by uid 1000 (the executor)
       /user-uploads: "size=256m,mode=755,uid=1000,gid=1000"
-    cap_drop: ["ALL"]
     # SETUID/SETGID let the executor spawn bash as uid 1001 to enforce ro /user-uploads
     cap_add: ["SETUID", "SETGID"]
-    security_opt:
-      - "no-new-privileges:true"
-    memory: "6g" # Could be smaller but no need
+    memory: "6g"
     cpus: 1.5
-    network_mode: "none"
     volumes:
       - "execsock:/run/execsock"
 
 shim:
   upstream-port: 8000
+  upstream-container: api-server
   paths:
     - /exec
     - /read
