@@ -5,7 +5,7 @@ memory: 8192
 
 containers:
   - name: "api-server"
-    image: "ghcr.io/tinfoilsh/code-execution-environment/api-server@sha256:e1cb4f491e9a4849af892e8cdf6c857a00de78a92fcd86e4a0d836f25c06a7f4" # v0.0.17
+    image: "ghcr.io/tinfoilsh/code-execution-environment/api-server@sha256:0000000000000000000000000000000000000000000000000000000000000000" # placeholder - populated during release
     user: "1000:1000"
     read_only: true
     cap_drop: ["ALL"]
@@ -17,7 +17,7 @@ containers:
       - "execsock:/run/execsock"
 
   - name: "executor"
-    image: "ghcr.io/tinfoilsh/code-execution-environment/executor@sha256:d47e359082bedb8d8950da2b988caf2689a833fbe64190b77742bc95ccbc76e0" # v0.0.17
+    image: "ghcr.io/tinfoilsh/code-execution-environment/executor@sha256:0000000000000000000000000000000000000000000000000000000000000000" # placeholder - populated during release
     user: "1000:1000"
     read_only: true
     tmpfs:
